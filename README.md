@@ -302,6 +302,10 @@ gcloud secrets create voyage-api-key --data-file=- < /dev/stdin
 PROJECT_ID=$(gcloud config get-value project)
 REGION=asia-northeast1
 
+ gcloud artifacts repositories create mindgraph \
+    --repository-format=docker \
+    --location=asia-northeast1
+
 gcloud builds submit \
   --tag $REGION-docker.pkg.dev/$PROJECT_ID/mindgraph/mindgraph:latest
 ```
