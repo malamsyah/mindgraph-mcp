@@ -40,7 +40,7 @@ See [SPEC.md](./SPEC.md) for the full design specification.
 
 ## Features
 
-- **12 MCP tools** for memory CRUD, search, graph traversal, embedding recovery, deletion, and tag management — see [tool reference](#tool-reference).
+- **13 MCP tools** for memory CRUD, search, graph traversal, embedding recovery, deletion, tag management, and relationship removal — see [tool reference](#tool-reference).
 - **Three search modes**: `fulltext`, `semantic`, `hybrid` (RRF fusion, default).
 - **Graph traversal**: shortest path between memories; n-hop neighborhood queries.
 - **Streamable HTTP MCP transport** — remote-deployable, accessible from any compliant MCP client.
@@ -243,6 +243,31 @@ Permanently delete a memory and all of its incoming/outgoing relationships. Tag 
 ```
 
 Returns `MemoryNotFound` if the id doesn't exist.
+
+### `delete_relationship`
+
+Remove the directional `RELATES_TO` edge between two memories carrying a specific label. Use to drop inverse-pair duplicates (e.g. delete `derives-from` when `source-of` is the canonical direction) or to clear typos. Parallel edges with other labels survive.
+
+**Input**
+```json
+{
+  "from_id": "01HXY...",
+  "to_id":   "01HXZ...",
+  "relationship": "derives-from"
+}
+```
+
+**Output**
+```json
+{
+  "from_id": "01HXY...",
+  "to_id":   "01HXZ...",
+  "relationship": "derives-from",
+  "deleted": true
+}
+```
+
+Returns `RelationshipNotFound` if no such edge exists. Directional — to delete the reverse edge, swap `from_id` and `to_id`.
 
 ### `delete_tag`
 
@@ -527,7 +552,7 @@ Browse to `http://localhost:7474` to inspect data visually during development.
 
 ## Roadmap
 
-v1 ships the twelve tools described above. Tracked for future versions:
+v1 ships the thirteen tools described above. Tracked for future versions:
 
 - **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones (current `delete_memory` is hard-delete only).
 - **v1.2**: Bulk import / export (markdown directory in, JSON dump out).

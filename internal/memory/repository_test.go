@@ -547,6 +547,82 @@ func TestDeleteMemory_RejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestDeleteRelationship_RemovesOnlyMatchingLabel(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	a := mustAdd(t, repo, ctx, "A", nil, nil)
+	b := mustAdd(t, repo, ctx, "B", nil, nil)
+	if err := repo.LinkMemories(ctx, a.ID, b.ID, "refines"); err != nil {
+		t.Fatalf("link refines: %v", err)
+	}
+	if err := repo.LinkMemories(ctx, a.ID, b.ID, "contradicts"); err != nil {
+		t.Fatalf("link contradicts: %v", err)
+	}
+
+	if err := repo.DeleteRelationship(ctx, a.ID, b.ID, "refines"); err != nil {
+		t.Fatalf("DeleteRelationship: %v", err)
+	}
+
+	detail, _ := repo.GetMemory(ctx, a.ID)
+	rels := map[string]bool{}
+	for _, r := range detail.Outgoing {
+		if r.ID == b.ID {
+			rels[r.Relationship] = true
+		}
+	}
+	if rels["refines"] {
+		t.Errorf("expected refines gone, still present in %+v", detail.Outgoing)
+	}
+	if !rels["contradicts"] {
+		t.Errorf("expected contradicts preserved, missing in %+v", detail.Outgoing)
+	}
+}
+
+func TestDeleteRelationship_DirectionalOnly(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	a := mustAdd(t, repo, ctx, "A", nil, nil)
+	b := mustAdd(t, repo, ctx, "B", nil, nil)
+	_ = repo.LinkMemories(ctx, a.ID, b.ID, "refines")
+
+	// Calling with from/to swapped should NOT delete the a->b edge.
+	if err := repo.DeleteRelationship(ctx, b.ID, a.ID, "refines"); !errors.Is(err, ErrRelationshipNotFound) {
+		t.Fatalf("expected ErrRelationshipNotFound for reversed direction, got %v", err)
+	}
+	detail, _ := repo.GetMemory(ctx, a.ID)
+	if len(detail.Outgoing) != 1 || detail.Outgoing[0].Relationship != "refines" {
+		t.Errorf("expected a->b refines preserved, got %+v", detail.Outgoing)
+	}
+}
+
+func TestDeleteRelationship_NotFound(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	a := mustAdd(t, repo, ctx, "A", nil, nil)
+	b := mustAdd(t, repo, ctx, "B", nil, nil)
+	// No link created.
+	if err := repo.DeleteRelationship(ctx, a.ID, b.ID, "refines"); !errors.Is(err, ErrRelationshipNotFound) {
+		t.Errorf("expected ErrRelationshipNotFound when no edge, got %v", err)
+	}
+	// Wrong label.
+	_ = repo.LinkMemories(ctx, a.ID, b.ID, "refines")
+	if err := repo.DeleteRelationship(ctx, a.ID, b.ID, "contradicts"); !errors.Is(err, ErrRelationshipNotFound) {
+		t.Errorf("expected ErrRelationshipNotFound for wrong label, got %v", err)
+	}
+}
+
+func TestDeleteRelationship_RejectsEmptyArgs(t *testing.T) {
+	repo := testRepo(t)
+	if err := repo.DeleteRelationship(context.Background(), "", "b", "refines"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs, got %v", err)
+	}
+	if err := repo.DeleteRelationship(context.Background(), "a", "b", ""); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for empty relationship, got %v", err)
+	}
+}
+
 func TestDeleteTag_RemovesTagPreservesMemories(t *testing.T) {
 	repo := testRepo(t)
 	ctx := context.Background()

@@ -7,9 +7,10 @@ import (
 )
 
 var (
-	ErrMemoryNotFound = errors.New("memory not found")
-	ErrTagNotFound    = errors.New("tag not found")
-	ErrInvalidArgs    = errors.New("invalid arguments")
+	ErrMemoryNotFound       = errors.New("memory not found")
+	ErrTagNotFound          = errors.New("tag not found")
+	ErrRelationshipNotFound = errors.New("relationship not found")
+	ErrInvalidArgs          = errors.New("invalid arguments")
 )
 
 type SearchMode string

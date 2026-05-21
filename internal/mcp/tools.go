@@ -44,6 +44,7 @@ func (h *Handlers) Register(s *server.MCPServer) {
 	s.AddTool(deleteTagTool(), h.handleDeleteTag)
 	s.AddTool(updateTagTool(), h.handleUpdateTag)
 	s.AddTool(mergeTagsTool(), h.handleMergeTags)
+	s.AddTool(deleteRelationshipTool(), h.handleDeleteRelationship)
 }
 
 // ---- tool definitions ----
@@ -129,6 +130,16 @@ func findRelatedTool() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Max results (default 20)."),
 			mcp.Min(1), mcp.Max(50), mcp.DefaultNumber(20)),
+	)
+}
+
+func deleteRelationshipTool() mcp.Tool {
+	return mcp.NewTool("delete_relationship",
+		mcp.WithDescription("Remove the directional RELATES_TO edge between two memories carrying the given label. Use to drop inverse-pair duplicates (e.g. delete the 'derives-from' edge when 'source-of' is the canonical direction) or to clear typos."),
+		mcp.WithString("from_id", mcp.Required(), mcp.Description("Source memory id.")),
+		mcp.WithString("to_id", mcp.Required(), mcp.Description("Target memory id.")),
+		mcp.WithString("relationship", mcp.Required(), mcp.MinLength(1),
+			mcp.Description("Exact relationship label to delete.")),
 	)
 }
 
@@ -336,6 +347,30 @@ func (h *Handlers) handleFindRelated(ctx context.Context, req mcp.CallToolReques
 	return jsonResult(map[string]any{"related": res})
 }
 
+func (h *Handlers) handleDeleteRelationship(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	from, err := req.RequireString("from_id")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	to, err := req.RequireString("to_id")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	rel, err := req.RequireString("relationship")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	if err := h.Repo.DeleteRelationship(ctx, from, to, rel); err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{
+		"from_id":      from,
+		"to_id":        to,
+		"relationship": rel,
+		"deleted":      true,
+	})
+}
+
 func (h *Handlers) handleDeleteTag(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, err := req.RequireString("name")
 	if err != nil {
@@ -521,6 +556,8 @@ func mapRepoError(err error) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError("MemoryNotFound: " + err.Error()), nil
 	case errors.Is(err, memory.ErrTagNotFound):
 		return mcp.NewToolResultError("TagNotFound: " + err.Error()), nil
+	case errors.Is(err, memory.ErrRelationshipNotFound):
+		return mcp.NewToolResultError("RelationshipNotFound: " + err.Error()), nil
 	case errors.Is(err, memory.ErrInvalidArgs):
 		return mcp.NewToolResultError("InvalidArgument: " + err.Error()), nil
 	default:

@@ -287,6 +287,38 @@ func (r *Repository) MergeTags(ctx context.Context, src, dst string) (int, error
 	return int(affected), nil
 }
 
+// DeleteRelationship removes the directional RELATES_TO edge between from_id
+// and to_id whose label matches relationship. Returns ErrRelationshipNotFound
+// if no such edge exists (this also covers the case where either memory is
+// missing — repos that want to distinguish should pre-check existence).
+func (r *Repository) DeleteRelationship(ctx context.Context, fromID, toID, relationship string) error {
+	if fromID == "" || toID == "" || relationship == "" {
+		return fmt.Errorf("%w: from_id, to_id, and relationship are required", ErrInvalidArgs)
+	}
+	const cypher = `
+		MATCH (from:Memory {id: $from_id})-[r:RELATES_TO {relationship: $relationship}]->(to:Memory {id: $to_id})
+		WITH collect(r) AS rels, count(r) AS deleted
+		FOREACH (rel IN rels | DELETE rel)
+		RETURN deleted`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{
+			"from_id":      fromID,
+			"to_id":        toID,
+			"relationship": relationship,
+		}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return fmt.Errorf("delete relationship: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return ErrRelationshipNotFound
+	}
+	deleted, _, _ := neo4j.GetRecordValue[int64](res.Records[0], "deleted")
+	if deleted == 0 {
+		return ErrRelationshipNotFound
+	}
+	return nil
+}
+
 // LinkMemories MERGEs a RELATES_TO edge with the given relationship label.
 // Parallel edges with different relationship strings are allowed (see SPEC §14).
 func (r *Repository) LinkMemories(ctx context.Context, fromID, toID, relationship string) error {
