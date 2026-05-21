@@ -40,7 +40,7 @@ See [SPEC.md](./SPEC.md) for the full design specification.
 
 ## Features
 
-- **8 MCP tools** for memory CRUD, search, graph traversal, and embedding recovery — see [tool reference](#tool-reference).
+- **9 MCP tools** for memory CRUD, search, graph traversal, embedding recovery, and deletion — see [tool reference](#tool-reference).
 - **Three search modes**: `fulltext`, `semantic`, `hybrid` (RRF fusion, default).
 - **Graph traversal**: shortest path between memories; n-hop neighborhood queries.
 - **Streamable HTTP MCP transport** — remote-deployable, accessible from any compliant MCP client.
@@ -227,6 +227,22 @@ Regenerate embeddings for memories whose original embedding call failed (or for 
 ```
 
 When some memories fail, `failures` is included with per-id error messages. If the embedder is unreachable, the partial result is returned alongside the error so you can see what was completed.
+
+### `delete_memory`
+
+Permanently delete a memory and all of its incoming/outgoing relationships. Tag nodes are preserved (they're shared and reusable). This is a hard delete — the memory cannot be recovered.
+
+**Input**
+```json
+{ "id": "01HXY..." }
+```
+
+**Output**
+```json
+{ "id": "01HXY...", "deleted": true }
+```
+
+Returns `MemoryNotFound` if the id doesn't exist.
 
 ## Quick start
 
@@ -455,9 +471,9 @@ Browse to `http://localhost:7474` to inspect data visually during development.
 
 ## Roadmap
 
-v1 ships the eight tools described above. Tracked for future versions:
+v1 ships the nine tools described above. Tracked for future versions:
 
-- **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones.
+- **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones (current `delete_memory` is hard-delete only).
 - **v1.2**: Bulk import / export (markdown directory in, JSON dump out).
 - **v1.3**: Memory versioning / history.
 - **v2.0**: Per-relationship-type weights; auto-suggested links via embedding similarity at write time.

@@ -40,6 +40,7 @@ func (h *Handlers) Register(s *server.MCPServer) {
 	s.AddTool(findPathTool(), h.handleFindPath)
 	s.AddTool(findRelatedTool(), h.handleFindRelated)
 	s.AddTool(reembedMemoriesTool(), h.handleReembedMemories)
+	s.AddTool(deleteMemoryTool(), h.handleDeleteMemory)
 }
 
 // ---- tool definitions ----
@@ -125,6 +126,13 @@ func findRelatedTool() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Max results (default 20)."),
 			mcp.Min(1), mcp.Max(50), mcp.DefaultNumber(20)),
+	)
+}
+
+func deleteMemoryTool() mcp.Tool {
+	return mcp.NewTool("delete_memory",
+		mcp.WithDescription("Permanently delete a memory and all of its relationships. Tag nodes are preserved. This is irreversible — the memory cannot be recovered."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Memory UUIDv7 to delete.")),
 	)
 }
 
@@ -288,6 +296,17 @@ func (h *Handlers) handleFindRelated(ctx context.Context, req mcp.CallToolReques
 		return mapRepoError(err)
 	}
 	return jsonResult(map[string]any{"related": res})
+}
+
+func (h *Handlers) handleDeleteMemory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("id")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	if err := h.Repo.DeleteMemory(ctx, id); err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{"id": id, "deleted": true})
 }
 
 func (h *Handlers) handleReembedMemories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -501,6 +501,52 @@ func TestListAllForReembed_PaginatesInIDOrder(t *testing.T) {
 	}
 }
 
+func TestDeleteMemory_RemovesNodeAndEdgesPreservesTags(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	a := mustAdd(t, repo, ctx, "A", []string{"shared"}, nil)
+	b := mustAdd(t, repo, ctx, "B", []string{"shared"}, nil)
+	if err := repo.LinkMemories(ctx, a.ID, b.ID, "refines"); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	if err := repo.DeleteMemory(ctx, a.ID); err != nil {
+		t.Fatalf("DeleteMemory: %v", err)
+	}
+
+	// A is gone.
+	if _, err := repo.GetMemory(ctx, a.ID); !errors.Is(err, ErrMemoryNotFound) {
+		t.Errorf("expected A to be gone, got %v", err)
+	}
+	// B survives without a dangling incoming edge.
+	detail, err := repo.GetMemory(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("get B: %v", err)
+	}
+	if len(detail.Incoming) != 0 {
+		t.Errorf("expected B.Incoming empty after deleting A, got %+v", detail.Incoming)
+	}
+	// Tag node still exists and is reachable via B.
+	if len(detail.Tags) != 1 || detail.Tags[0] != "shared" {
+		t.Errorf("expected tag 'shared' preserved on B, got %+v", detail.Tags)
+	}
+}
+
+func TestDeleteMemory_NotFound(t *testing.T) {
+	repo := testRepo(t)
+	if err := repo.DeleteMemory(context.Background(), "nope"); !errors.Is(err, ErrMemoryNotFound) {
+		t.Errorf("expected ErrMemoryNotFound, got %v", err)
+	}
+}
+
+func TestDeleteMemory_RejectsEmptyID(t *testing.T) {
+	repo := testRepo(t)
+	if err := repo.DeleteMemory(context.Background(), ""); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs, got %v", err)
+	}
+}
+
 func TestGetMemoryContent(t *testing.T) {
 	repo := testRepo(t)
 	ctx := context.Background()

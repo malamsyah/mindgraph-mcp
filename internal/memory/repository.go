@@ -157,6 +157,31 @@ func (r *Repository) GetMemory(ctx context.Context, id string) (*MemoryDetail, e
 	return detail, nil
 }
 
+// DeleteMemory permanently removes a memory node along with all of its
+// incoming and outgoing relationships. Tag nodes are left in place because
+// they're shared and harmless when orphaned; future memories can reuse them.
+//
+// This is irreversible — there is no soft-delete in v1.
+func (r *Repository) DeleteMemory(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: id is required", ErrInvalidArgs)
+	}
+	const cypher = `
+		MATCH (m:Memory {id: $id})
+		WITH m, m.id AS deleted_id
+		DETACH DELETE m
+		RETURN deleted_id`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"id": id}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return fmt.Errorf("delete memory: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return ErrMemoryNotFound
+	}
+	return nil
+}
+
 // LinkMemories MERGEs a RELATES_TO edge with the given relationship label.
 // Parallel edges with different relationship strings are allowed (see SPEC §14).
 func (r *Repository) LinkMemories(ctx context.Context, fromID, toID, relationship string) error {
