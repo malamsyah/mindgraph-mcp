@@ -547,6 +547,115 @@ func TestDeleteMemory_RejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestAddCodeRef_AttachesAndIsIdempotent(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	m := mustAdd(t, repo, ctx, "decision: rate limit at edge", nil, nil)
+
+	if err := repo.AddCodeRef(ctx, m.ID, "github.com/foo/bar", "internal/limiter.go", "abc123", 42); err != nil {
+		t.Fatalf("AddCodeRef: %v", err)
+	}
+	// Idempotent: same tuple twice yields a single edge/node.
+	if err := repo.AddCodeRef(ctx, m.ID, "github.com/foo/bar", "internal/limiter.go", "abc123", 42); err != nil {
+		t.Fatalf("AddCodeRef (second): %v", err)
+	}
+
+	detail, err := repo.GetMemory(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if len(detail.CodeRefs) != 1 {
+		t.Fatalf("expected 1 code ref after idempotent add, got %d (%+v)", len(detail.CodeRefs), detail.CodeRefs)
+	}
+	ref := detail.CodeRefs[0]
+	if ref.Repo != "github.com/foo/bar" || ref.Path != "internal/limiter.go" || ref.Sha != "abc123" || ref.Line != 42 {
+		t.Errorf("ref = %+v", ref)
+	}
+}
+
+func TestAddCodeRef_MemoryNotFound(t *testing.T) {
+	repo := testRepo(t)
+	err := repo.AddCodeRef(context.Background(), "ghost", "r", "p", "", 0)
+	if !errors.Is(err, ErrMemoryNotFound) {
+		t.Errorf("expected ErrMemoryNotFound, got %v", err)
+	}
+}
+
+func TestAddCodeRef_RejectsEmptyArgs(t *testing.T) {
+	repo := testRepo(t)
+	if err := repo.AddCodeRef(context.Background(), "", "r", "p", "", 0); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for empty memory_id, got %v", err)
+	}
+	if err := repo.AddCodeRef(context.Background(), "x", "", "p", "", 0); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for empty repo, got %v", err)
+	}
+	if err := repo.AddCodeRef(context.Background(), "x", "r", "", "", 0); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for empty path, got %v", err)
+	}
+}
+
+func TestFindMemoriesByCode_FindsRegardlessOfShaOrLine(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	older := mustAdd(t, repo, ctx, "older", nil, nil)
+	time.Sleep(30 * time.Millisecond)
+	newer := mustAdd(t, repo, ctx, "newer", nil, nil)
+	unrelated := mustAdd(t, repo, ctx, "unrelated", nil, nil)
+
+	_ = repo.AddCodeRef(ctx, older.ID, "github.com/foo/bar", "src/a.go", "sha1", 10)
+	_ = repo.AddCodeRef(ctx, newer.ID, "github.com/foo/bar", "src/a.go", "sha2", 20)
+	_ = repo.AddCodeRef(ctx, unrelated.ID, "github.com/foo/bar", "src/b.go", "sha1", 0)
+
+	hits, err := repo.FindMemoriesByCode(ctx, "github.com/foo/bar", "src/a.go", 10)
+	if err != nil {
+		t.Fatalf("FindMemoriesByCode: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits for src/a.go, got %d (%+v)", len(hits), hits)
+	}
+	// Sorted by updated_at DESC ⇒ newer first.
+	if hits[0].ID != newer.ID || hits[1].ID != older.ID {
+		t.Errorf("order = %s,%s; want %s,%s", hits[0].ID, hits[1].ID, newer.ID, older.ID)
+	}
+}
+
+func TestFindMemoriesByCode_EmptyResultForUnknownFile(t *testing.T) {
+	repo := testRepo(t)
+	hits, err := repo.FindMemoriesByCode(context.Background(), "r", "missing.go", 10)
+	if err != nil {
+		t.Fatalf("FindMemoriesByCode: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("expected empty result, got %+v", hits)
+	}
+}
+
+func TestFindMemoriesByCode_RejectsEmptyArgs(t *testing.T) {
+	repo := testRepo(t)
+	if _, err := repo.FindMemoriesByCode(context.Background(), "", "p", 10); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for empty repo, got %v", err)
+	}
+}
+
+func TestGetMemory_IncludesCodeRefs(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	m := mustAdd(t, repo, ctx, "with refs", nil, nil)
+
+	_ = repo.AddCodeRef(ctx, m.ID, "github.com/foo/bar", "src/a.go", "sha1", 10)
+	_ = repo.AddCodeRef(ctx, m.ID, "github.com/foo/bar", "src/a.go", "sha2", 0) // different sha
+	_ = repo.AddCodeRef(ctx, m.ID, "github.com/foo/bar", "src/b.go", "", 0)     // HEAD, file-level
+
+	detail, err := repo.GetMemory(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if len(detail.CodeRefs) != 3 {
+		t.Fatalf("expected 3 code refs, got %d (%+v)", len(detail.CodeRefs), detail.CodeRefs)
+	}
+}
+
 func TestListTags_CountsAndSorts(t *testing.T) {
 	repo := testRepo(t)
 	ctx := context.Background()

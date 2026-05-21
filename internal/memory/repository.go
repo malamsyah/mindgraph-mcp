@@ -38,10 +38,14 @@ func (r *Repository) Bootstrap(ctx context.Context, embeddingDimensions int) err
 		   FOR (m:Memory) REQUIRE m.id IS UNIQUE`,
 		`CREATE CONSTRAINT tag_name_unique IF NOT EXISTS
 		   FOR (t:Tag) REQUIRE t.name IS UNIQUE`,
+		`CREATE CONSTRAINT coderef_unique IF NOT EXISTS
+		   FOR (c:CodeRef) REQUIRE (c.repo, c.path, c.sha, c.line) IS UNIQUE`,
 		`CREATE FULLTEXT INDEX memory_content_fts IF NOT EXISTS
 		   FOR (m:Memory) ON EACH [m.content]`,
 		`CREATE INDEX memory_updated_at IF NOT EXISTS
 		   FOR (m:Memory) ON (m.updated_at)`,
+		`CREATE INDEX coderef_repo_path IF NOT EXISTS
+		   FOR (c:CodeRef) ON (c.repo, c.path)`,
 		fmt.Sprintf(`CREATE VECTOR INDEX memory_content_vec IF NOT EXISTS
 		   FOR (m:Memory) ON (m.embedding)
 		   OPTIONS { indexConfig: {
@@ -107,13 +111,15 @@ func (r *Repository) AddMemory(ctx context.Context, content string, tags []strin
 	return recordToMemory(res.Records[0])
 }
 
-// GetMemory returns a memory plus its tags + incoming/outgoing relationships.
+// GetMemory returns a memory plus its tags, incoming/outgoing relationships,
+// and any attached code references.
 func (r *Repository) GetMemory(ctx context.Context, id string) (*MemoryDetail, error) {
 	const cypher = `
 		MATCH (m:Memory {id: $id})
 		OPTIONAL MATCH (m)-[:TAGGED_WITH]->(t:Tag)
 		OPTIONAL MATCH (m)-[out:RELATES_TO]->(target:Memory)
 		OPTIONAL MATCH (source:Memory)-[in:RELATES_TO]->(m)
+		OPTIONAL MATCH (m)-[:REFERENCES_CODE]->(c:CodeRef)
 		RETURN
 		  m.id AS id,
 		  m.content AS content,
@@ -121,7 +127,8 @@ func (r *Repository) GetMemory(ctx context.Context, id string) (*MemoryDetail, e
 		  m.updated_at AS updated_at,
 		  collect(DISTINCT t.name) AS tags,
 		  collect(DISTINCT CASE WHEN target IS NULL THEN NULL ELSE {id: target.id, relationship: out.relationship} END) AS outgoing,
-		  collect(DISTINCT CASE WHEN source IS NULL THEN NULL ELSE {id: source.id, relationship: in.relationship} END) AS incoming`
+		  collect(DISTINCT CASE WHEN source IS NULL THEN NULL ELSE {id: source.id, relationship: in.relationship} END) AS incoming,
+		  collect(DISTINCT CASE WHEN c IS NULL THEN NULL ELSE {repo: c.repo, path: c.path, sha: c.sha, line: c.line} END) AS code_refs`
 	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher, map[string]any{"id": id}, neo4j.EagerResultTransformer)
 	if err != nil {
 		return nil, fmt.Errorf("get memory: %w", err)
@@ -154,7 +161,73 @@ func (r *Repository) GetMemory(ctx context.Context, id string) (*MemoryDetail, e
 	if ins, ok := rec.Get("incoming"); ok {
 		detail.Incoming = relationshipsFromAny(ins)
 	}
+	if refs, ok := rec.Get("code_refs"); ok {
+		detail.CodeRefs = codeRefsFromAny(refs)
+	}
 	return detail, nil
+}
+
+// AddCodeRef MERGEs a CodeRef node and a REFERENCES_CODE edge from the memory
+// to it. Idempotent: calling twice with the same (memory_id, repo, path, sha,
+// line) tuple yields a single edge.
+//
+// sha may be empty to mean "HEAD-relative — line numbers will drift". Pin sha
+// for stable references. line may be 0 to mean a file-level reference.
+func (r *Repository) AddCodeRef(ctx context.Context, memoryID, repo, path, sha string, line int) error {
+	if memoryID == "" || repo == "" || path == "" {
+		return fmt.Errorf("%w: memory_id, repo, and path are required", ErrInvalidArgs)
+	}
+	const cypher = `
+		MATCH (m:Memory {id: $memory_id})
+		MERGE (c:CodeRef {repo: $repo, path: $path, sha: $sha, line: $line})
+		MERGE (m)-[:REFERENCES_CODE]->(c)
+		RETURN m.id AS id`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{
+			"memory_id": memoryID,
+			"repo":      repo,
+			"path":      path,
+			"sha":       sha,
+			"line":      int64(line),
+		}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return fmt.Errorf("add code ref: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return ErrMemoryNotFound
+	}
+	return nil
+}
+
+// FindMemoriesByCode returns memories with at least one CodeRef pointing at
+// the given (repo, path), regardless of sha or line. Sorted by updated_at DESC.
+func (r *Repository) FindMemoriesByCode(ctx context.Context, repo, path string, limit int) ([]SearchHit, error) {
+	if repo == "" || path == "" {
+		return nil, fmt.Errorf("%w: repo and path are required", ErrInvalidArgs)
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	const cypher = `
+		MATCH (c:CodeRef {repo: $repo, path: $path})<-[:REFERENCES_CODE]-(m:Memory)
+		RETURN DISTINCT m.id AS id, m.content AS content, m.updated_at AS updated_at
+		ORDER BY m.updated_at DESC
+		LIMIT $limit`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"repo": repo, "path": path, "limit": int64(limit)},
+		neo4j.EagerResultTransformer)
+	if err != nil {
+		return nil, fmt.Errorf("find memories by code: %w", err)
+	}
+	hits := make([]SearchHit, 0, len(res.Records))
+	for _, rec := range res.Records {
+		hit, err := recordToHit(rec, false)
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, hit)
+	}
+	return hits, nil
 }
 
 // DeleteMemory permanently removes a memory node along with all of its
@@ -825,6 +898,37 @@ func relationshipsFromAny(v any) []Relationship {
 			continue
 		}
 		out = append(out, Relationship{ID: id, Relationship: rel})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func codeRefsFromAny(v any) []CodeRef {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]CodeRef, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		repo := stringOr(m["repo"])
+		if repo == "" {
+			continue // null/empty entries from OPTIONAL MATCH
+		}
+		ref := CodeRef{
+			Repo: repo,
+			Path: stringOr(m["path"]),
+			Sha:  stringOr(m["sha"]),
+		}
+		if l, ok := m["line"].(int64); ok {
+			ref.Line = int(l)
+		}
+		out = append(out, ref)
 	}
 	if len(out) == 0 {
 		return nil

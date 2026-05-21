@@ -41,6 +41,17 @@ type MemoryDetail struct {
 	Tags     []string       `json:"tags"`
 	Outgoing []Relationship `json:"outgoing"`
 	Incoming []Relationship `json:"incoming"`
+	CodeRefs []CodeRef      `json:"code_refs,omitempty"`
+}
+
+// CodeRef is an annotation pointing at a code location. Sha is optional
+// (empty string = HEAD-relative, drifts over time); line is optional
+// (0 = file-level reference).
+type CodeRef struct {
+	Repo string `json:"repo"`
+	Path string `json:"path"`
+	Sha  string `json:"sha,omitempty"`
+	Line int    `json:"line,omitempty"`
 }
 
 // SearchHit is a single result from any search mode. Score is opaque between

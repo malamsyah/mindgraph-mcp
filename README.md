@@ -40,7 +40,7 @@ See [SPEC.md](./SPEC.md) for the full design specification.
 
 ## Features
 
-- **16 MCP tools** for memory CRUD, search, graph traversal, enumeration, embedding recovery, deletion, tag management, and relationship removal — see [tool reference](#tool-reference).
+- **18 MCP tools** for memory CRUD, search, graph traversal, enumeration, embedding recovery, deletion, tag management, relationship removal, and code-context linking — see [tool reference](#tool-reference).
 - **Three search modes**: `fulltext`, `semantic`, `hybrid` (RRF fusion, default).
 - **Graph traversal**: shortest path between memories; n-hop neighborhood queries.
 - **Streamable HTTP MCP transport** — remote-deployable, accessible from any compliant MCP client.
@@ -118,7 +118,7 @@ Search memories by full-text, semantic, or hybrid mode. Optional tag filter.
 
 ### `get_memory`
 
-Fetch a single memory by ID, with its tags and incoming/outgoing relationships.
+Fetch a single memory by ID, with its tags, incoming/outgoing relationships, and any code references.
 
 **Input**
 ```json
@@ -134,9 +134,14 @@ Fetch a single memory by ID, with its tags and incoming/outgoing relationships.
   "updated_at": "...",
   "tags": ["design-patterns", "reliability"],
   "outgoing": [{ "id": "01HXZ...", "relationship": "refines" }],
-  "incoming": [{ "id": "01HXW...", "relationship": "context-for" }]
+  "incoming": [{ "id": "01HXW...", "relationship": "context-for" }],
+  "code_refs": [
+    { "repo": "github.com/foo/bar", "path": "internal/limiter.go", "sha": "abc123", "line": 42 }
+  ]
 }
 ```
+
+`code_refs` is omitted when empty.
 
 ### `link_memories`
 
@@ -162,6 +167,58 @@ Most recently updated memories, optionally tag-filtered.
 {
   "limit": 10,
   "tags": ["reliability"]
+}
+```
+
+### `add_code_ref`
+
+Attach a code reference to a memory so it surfaces via `find_by_code` when you're working in that file. Idempotent for identical `(memory_id, repo, path, sha, line)` tuples.
+
+**Input**
+```json
+{
+  "memory_id": "01HXY...",
+  "repo": "github.com/foo/bar",
+  "path": "internal/limiter.go",
+  "sha": "abc123",
+  "line": 42
+}
+```
+
+- `sha` (optional) — empty means "HEAD-relative" (line numbers will drift over time). Pin a sha for stable references.
+- `line` (optional, default 0) — 0 means a file-level reference.
+
+**Output**
+```json
+{
+  "memory_id": "01HXY...",
+  "repo": "github.com/foo/bar",
+  "path": "internal/limiter.go",
+  "sha": "abc123",
+  "line": 42,
+  "attached": true
+}
+```
+
+Returns `MemoryNotFound` if the memory id doesn't exist.
+
+### `find_by_code`
+
+Find memories with at least one code reference pointing at the given `(repo, path)`, regardless of sha or line. Sorted by `updated_at` DESC. Use this to surface decision-log context when opening a file.
+
+**Input**
+```json
+{ "repo": "github.com/foo/bar", "path": "internal/limiter.go", "limit": 20 }
+```
+
+**Output**
+```json
+{
+  "repo": "github.com/foo/bar",
+  "path": "internal/limiter.go",
+  "hits": [
+    { "id": "01HXY...", "content": "decision: rate limit at edge...", "updated_at": "...", "score": 0 }
+  ]
 }
 ```
 
@@ -609,7 +666,7 @@ Browse to `http://localhost:7474` to inspect data visually during development.
 
 ## Roadmap
 
-v1 ships the sixteen tools described above. Tracked for future versions:
+v1 ships the eighteen tools described above. Tracked for future versions:
 
 - **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones (current `delete_memory` is hard-delete only).
 - **v1.2**: Bulk import / export (markdown directory in, JSON dump out).

@@ -50,6 +50,8 @@ func (h *Handlers) Register(s *server.MCPServer) {
 	s.AddTool(listTagsTool(), h.handleListTags)
 	s.AddTool(listMemoriesTool(), h.handleListMemories)
 	s.AddTool(listRelationshipsTool(), h.handleListRelationships)
+	s.AddTool(addCodeRefTool(), h.handleAddCodeRef)
+	s.AddTool(findByCodeTool(), h.handleFindByCode)
 }
 
 // ---- tool definitions ----
@@ -138,6 +140,26 @@ func findRelatedTool() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Max results (default 20)."),
 			mcp.Min(1), mcp.Max(50), mcp.DefaultNumber(20)),
+	)
+}
+
+func addCodeRefTool() mcp.Tool {
+	return mcp.NewTool("add_code_ref",
+		mcp.WithDescription("Attach a code reference to a memory so it surfaces via find_by_code when you're working in that file. Idempotent for identical (memory, repo, path, sha, line) tuples."),
+		mcp.WithString("memory_id", mcp.Required(), mcp.Description("Memory UUIDv7 to attach the reference to.")),
+		mcp.WithString("repo", mcp.Required(), mcp.MinLength(1), mcp.Description("Repo identifier (e.g. 'github.com/foo/bar').")),
+		mcp.WithString("path", mcp.Required(), mcp.MinLength(1), mcp.Description("Path within the repo (e.g. 'internal/auth/middleware.go').")),
+		mcp.WithString("sha", mcp.Description("Optional commit SHA. Empty = HEAD-relative (line numbers will drift).")),
+		mcp.WithNumber("line", mcp.Description("Optional line number. 0 (default) = file-level reference."), mcp.Min(0), mcp.DefaultNumber(0)),
+	)
+}
+
+func findByCodeTool() mcp.Tool {
+	return mcp.NewTool("find_by_code",
+		mcp.WithDescription("Find memories that reference a given (repo, path), regardless of sha or line. Sorted by updated_at DESC. Use this to surface decision-log context when opening a file."),
+		mcp.WithString("repo", mcp.Required(), mcp.MinLength(1)),
+		mcp.WithString("path", mcp.Required(), mcp.MinLength(1)),
+		mcp.WithNumber("limit", mcp.Description("Max results (1-50, default 20)."), mcp.Min(1), mcp.Max(50), mcp.DefaultNumber(20)),
 	)
 }
 
@@ -416,6 +438,55 @@ func (h *Handlers) handleFindRelated(ctx context.Context, req mcp.CallToolReques
 		return mapRepoError(err)
 	}
 	return jsonResult(map[string]any{"related": res})
+}
+
+func (h *Handlers) handleAddCodeRef(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	memID, err := req.RequireString("memory_id")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	repo, err := req.RequireString("repo")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	path, err := req.RequireString("path")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	sha := req.GetString("sha", "")
+	line := req.GetInt("line", 0)
+	if err := h.Repo.AddCodeRef(ctx, memID, repo, path, sha, line); err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{
+		"memory_id": memID,
+		"repo":      repo,
+		"path":      path,
+		"sha":       sha,
+		"line":      line,
+		"attached":  true,
+	})
+}
+
+func (h *Handlers) handleFindByCode(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	repo, err := req.RequireString("repo")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	path, err := req.RequireString("path")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	limit := req.GetInt("limit", 20)
+	hits, err := h.Repo.FindMemoriesByCode(ctx, repo, path, limit)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{
+		"repo": repo,
+		"path": path,
+		"hits": hits,
+	})
 }
 
 func (h *Handlers) handleListTags(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
