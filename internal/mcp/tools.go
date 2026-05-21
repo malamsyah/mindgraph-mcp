@@ -20,14 +20,16 @@ import (
 // Handlers binds the dependencies needed by every MCP tool.
 //
 // Embedder may be nil during Phase 1; semantic and hybrid search modes return
-// InvalidArgument until it is wired up.
+// InvalidArgument until it is wired up. SuggestLinksThreshold controls the
+// minimum cosine similarity required for add_memory's link suggestions.
 type Handlers struct {
-	Repo     *memory.Repository
-	Embedder embeddings.Embedder
+	Repo                  *memory.Repository
+	Embedder              embeddings.Embedder
+	SuggestLinksThreshold float64
 }
 
-func NewHandlers(repo *memory.Repository, embedder embeddings.Embedder) *Handlers {
-	return &Handlers{Repo: repo, Embedder: embedder}
+func NewHandlers(repo *memory.Repository, embedder embeddings.Embedder, suggestLinksThreshold float64) *Handlers {
+	return &Handlers{Repo: repo, Embedder: embedder, SuggestLinksThreshold: suggestLinksThreshold}
 }
 
 // Register attaches all mindgraph tools to the MCP server.
@@ -54,12 +56,15 @@ func (h *Handlers) Register(s *server.MCPServer) {
 
 func addMemoryTool() mcp.Tool {
 	return mcp.NewTool("add_memory",
-		mcp.WithDescription("Create a new memory with optional tags. Embedding is generated automatically when configured."),
+		mcp.WithDescription("Create a new memory with optional tags. Embedding is generated automatically when configured. By default, returns up to 5 semantically similar existing memories as suggested_links for use with link_memories."),
 		mcp.WithString("content", mcp.Required(), mcp.MinLength(1),
 			mcp.Description("Markdown content of the memory.")),
 		mcp.WithArray("tags",
 			mcp.Description("Optional tag list; lowercased and de-duplicated."),
 			mcp.WithStringItems()),
+		mcp.WithBoolean("suggest_links",
+			mcp.Description("If true (default), return top-K semantically similar memories as suggested_links. Set false to skip the extra semantic search."),
+			mcp.DefaultBool(true)),
 	)
 }
 
@@ -224,6 +229,7 @@ func (h *Handlers) handleAddMemory(ctx context.Context, req mcp.CallToolRequest)
 		return invalidArg(err.Error()), nil
 	}
 	tags := req.GetStringSlice("tags", nil)
+	suggestLinks := req.GetBool("suggest_links", true)
 
 	var (
 		embedding []float32
@@ -252,6 +258,18 @@ func (h *Handlers) handleAddMemory(ctx context.Context, req mcp.CallToolRequest)
 		return mapRepoError(err)
 	}
 
+	var suggested []memory.SearchHit
+	if suggestLinks && len(embedding) > 0 {
+		// Ask for k+1 candidates so we can drop the newly-created memory if it
+		// appears in its own nearest-neighbors (it will, exactly).
+		candidates, sErr := h.Repo.SearchSemantic(ctx, embedding, nil, 6)
+		if sErr != nil {
+			slog.Warn("add_memory: suggest_links search failed; returning without suggestions", "err", sErr)
+		} else {
+			suggested = selectSuggestedLinks(candidates, mem.ID, h.SuggestLinksThreshold, 5)
+		}
+	}
+
 	resp := map[string]any{
 		"id":         mem.ID,
 		"content":    mem.Content,
@@ -260,7 +278,37 @@ func (h *Handlers) handleAddMemory(ctx context.Context, req mcp.CallToolRequest)
 	if warning != "" {
 		resp["warning"] = warning
 	}
+	if len(suggested) > 0 {
+		resp["suggested_links"] = suggested
+	}
 	return jsonResult(resp)
+}
+
+// selectSuggestedLinks filters and truncates SearchSemantic results for
+// add_memory's suggested_links field: drop the newly-created memory (it always
+// scores 1.0 against itself), drop anything below the threshold, take the top k.
+// Pure function so it can be unit-tested without a Neo4j instance.
+func selectSuggestedLinks(hits []memory.SearchHit, selfID string, threshold float64, k int) []memory.SearchHit {
+	if k <= 0 {
+		return nil
+	}
+	out := make([]memory.SearchHit, 0, k)
+	for _, h := range hits {
+		if h.ID == selfID {
+			continue
+		}
+		if h.Score < threshold {
+			continue
+		}
+		out = append(out, h)
+		if len(out) >= k {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (h *Handlers) handleSearchMemory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

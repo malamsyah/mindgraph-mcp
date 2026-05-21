@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	APIKey              string
-	Neo4jURI            string
-	Neo4jUser           string
-	Neo4jPassword       string
-	VoyageAPIKey        string
-	EmbeddingModel      string
-	EmbeddingDimensions int
-	Port                string
-	LogLevel            string
+	APIKey                string
+	Neo4jURI              string
+	Neo4jUser             string
+	Neo4jPassword         string
+	VoyageAPIKey          string
+	EmbeddingModel        string
+	EmbeddingDimensions   int
+	Port                  string
+	LogLevel              string
+	SuggestLinksThreshold float64
 }
 
 var ErrMissingRequired = errors.New("missing required environment variable")
@@ -38,6 +39,12 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("EMBEDDING_DIMENSIONS must be an integer: %w", err)
 	}
 	cfg.EmbeddingDimensions = dims
+
+	threshold, err := strconv.ParseFloat(getenv("SUGGEST_LINKS_THRESHOLD", "0.75"), 64)
+	if err != nil {
+		return nil, fmt.Errorf("SUGGEST_LINKS_THRESHOLD must be a float: %w", err)
+	}
+	cfg.SuggestLinksThreshold = threshold
 
 	required := map[string]string{
 		"MINDGRAPH_API_KEY": cfg.APIKey,

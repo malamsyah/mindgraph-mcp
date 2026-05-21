@@ -55,7 +55,7 @@ func main() {
 	embedder := embeddings.NewVoyageClient(cfg.VoyageAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions, nil)
 	go backfillMissingEmbeddings(ctx, repo, embedder)
 
-	mcpSrv := mcpserver.NewServer(mcpserver.NewHandlers(repo, embedder))
+	mcpSrv := mcpserver.NewServer(mcpserver.NewHandlers(repo, embedder, cfg.SuggestLinksThreshold))
 	streamable := server.NewStreamableHTTPServer(mcpSrv)
 
 	httpSrv := &http.Server{

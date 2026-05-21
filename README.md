@@ -72,24 +72,33 @@ All tools are accessed via the MCP `tools/call` method. Inputs and outputs are J
 
 ### `add_memory`
 
-Create a new memory with optional tags. Embedding is generated automatically.
+Create a new memory with optional tags. Embedding is generated automatically. By default the response includes `suggested_links` — semantically similar existing memories you can wire up via `link_memories`, which prevents the graph from drifting into disconnected islands.
 
 **Input**
 ```json
 {
   "content": "Circuit breaker pattern: open the circuit when downstream errors exceed threshold to prevent cascading failures. Half-open state retries periodically to detect recovery.",
-  "tags": ["design-patterns", "reliability", "distributed-systems"]
+  "tags": ["design-patterns", "reliability", "distributed-systems"],
+  "suggest_links": true
 }
 ```
+
+- `suggest_links` (default `true`) — set false to skip the post-write semantic search if you already know what to link.
 
 **Output**
 ```json
 {
   "id": "01HXY...",
   "content": "Circuit breaker pattern: open the circuit when downstream errors...",
-  "created_at": "2026-05-20T03:14:00Z"
+  "created_at": "2026-05-20T03:14:00Z",
+  "suggested_links": [
+    { "id": "01HXZ...", "content": "Bulkhead pattern: isolate failure...", "updated_at": "...", "score": 0.87 },
+    { "id": "01HXW...", "content": "Retry with jitter...", "updated_at": "...", "score": 0.79 }
+  ]
 }
 ```
+
+Suggestions are filtered by cosine similarity ≥ `SUGGEST_LINKS_THRESHOLD` (default 0.75) and capped at 5. The newly-created memory is excluded from its own suggestions. Field is omitted when no suggestions clear the threshold or when `suggest_links: false`.
 
 ### `search_memory`
 
@@ -441,6 +450,7 @@ curl -X POST http://localhost:8080/mcp \
 | `VOYAGE_API_KEY` | yes | — | From [Voyage AI dashboard](https://dash.voyageai.com). |
 | `EMBEDDING_MODEL` | no | `voyage-3-large` | Voyage AI model name. |
 | `EMBEDDING_DIMENSIONS` | no | `2048` | Must match the vector index DDL. |
+| `SUGGEST_LINKS_THRESHOLD` | no | `0.75` | Min cosine similarity for `add_memory` to surface a memory as a suggested link. |
 | `PORT` | no | `8080` | HTTP listen port. |
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error`. |
 
