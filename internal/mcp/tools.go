@@ -12,6 +12,7 @@ import (
 
 	"github.com/malamsyah/mindgraph-mcp/internal/embeddings"
 	"github.com/malamsyah/mindgraph-mcp/internal/memory"
+	"github.com/malamsyah/mindgraph-mcp/internal/reembed"
 	"github.com/malamsyah/mindgraph-mcp/internal/search"
 	"golang.org/x/sync/errgroup"
 )
@@ -38,6 +39,7 @@ func (h *Handlers) Register(s *server.MCPServer) {
 	s.AddTool(listRecentTool(), h.handleListRecent)
 	s.AddTool(findPathTool(), h.handleFindPath)
 	s.AddTool(findRelatedTool(), h.handleFindRelated)
+	s.AddTool(reembedMemoriesTool(), h.handleReembedMemories)
 }
 
 // ---- tool definitions ----
@@ -123,6 +125,21 @@ func findRelatedTool() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Max results (default 20)."),
 			mcp.Min(1), mcp.Max(50), mcp.DefaultNumber(20)),
+	)
+}
+
+func reembedMemoriesTool() mcp.Tool {
+	return mcp.NewTool("reembed_memories",
+		mcp.WithDescription("Regenerate embeddings for memories whose previous embedding call failed (scope=missing, default) or for every memory (scope=all). If id is set, only that memory is re-embedded."),
+		mcp.WithString("scope",
+			mcp.Description("Which memories to re-embed: 'missing' (NULL embedding only) or 'all'."),
+			mcp.Enum("missing", "all"),
+			mcp.DefaultString("missing")),
+		mcp.WithString("id",
+			mcp.Description("Optional. If set, re-embed only this memory and ignore scope.")),
+		mcp.WithNumber("limit",
+			mcp.Description("Max memories to process in this call. 0 = no cap."),
+			mcp.Min(0), mcp.Max(10000), mcp.DefaultNumber(0)),
 	)
 }
 
@@ -271,6 +288,40 @@ func (h *Handlers) handleFindRelated(ctx context.Context, req mcp.CallToolReques
 		return mapRepoError(err)
 	}
 	return jsonResult(map[string]any{"related": res})
+}
+
+func (h *Handlers) handleReembedMemories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.Embedder == nil {
+		return invalidArg("reembed requires embedder configuration"), nil
+	}
+	opts := reembed.Options{
+		Scope: reembed.Scope(req.GetString("scope", string(reembed.ScopeMissing))),
+		ID:    req.GetString("id", ""),
+		Max:   req.GetInt("limit", 0),
+	}
+	result, err := reembed.Run(ctx, h.Repo, h.Embedder, opts)
+	if err != nil {
+		// Surface partial progress alongside the error rather than dropping it.
+		if errors.Is(err, memory.ErrMemoryNotFound) {
+			return mapRepoError(err)
+		}
+		slog.Error("reembed failed", "err", err, "processed", processedOr(result))
+		if result == nil {
+			return mcp.NewToolResultError("Internal: " + err.Error()), nil
+		}
+		return jsonResult(map[string]any{
+			"result": result,
+			"error":  err.Error(),
+		})
+	}
+	return jsonResult(result)
+}
+
+func processedOr(r *reembed.Result) int {
+	if r == nil {
+		return 0
+	}
+	return r.Processed
 }
 
 // ---- helpers ----

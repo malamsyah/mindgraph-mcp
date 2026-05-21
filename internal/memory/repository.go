@@ -319,6 +319,54 @@ func (r *Repository) MissingEmbeddings(ctx context.Context, limit int) ([]Memory
 	return out, nil
 }
 
+// ListAllForReembed returns memories with id > afterID, ordered by id ASC, up
+// to limit. Used for full re-embed (e.g. recovering from a batch of failed
+// embedding calls) where target memories may already have a stored — but
+// incorrect — embedding, so we can't rely on the NULL filter. UUIDv7 IDs are
+// time-ordered, so id-cursor pagination is stable and creation-order.
+func (r *Repository) ListAllForReembed(ctx context.Context, afterID string, limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 128
+	}
+	const cypher = `
+		MATCH (m:Memory)
+		WHERE $after_id = "" OR m.id > $after_id
+		RETURN m.id AS id, m.content AS content, m.created_at AS created_at, m.updated_at AS updated_at
+		ORDER BY m.id ASC
+		LIMIT $limit`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"after_id": afterID, "limit": int64(limit)},
+		neo4j.EagerResultTransformer)
+	if err != nil {
+		return nil, fmt.Errorf("list all for reembed: %w", err)
+	}
+	out := make([]Memory, 0, len(res.Records))
+	for _, rec := range res.Records {
+		mem, err := recordToMemory(rec)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *mem)
+	}
+	return out, nil
+}
+
+// GetMemoryContent returns just the content of a memory by id, used by the
+// single-id reembed path. Returns ErrMemoryNotFound if no such memory.
+func (r *Repository) GetMemoryContent(ctx context.Context, id string) (string, error) {
+	const cypher = `MATCH (m:Memory {id: $id}) RETURN m.content AS content`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"id": id}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return "", fmt.Errorf("get memory content: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return "", ErrMemoryNotFound
+	}
+	content, _, _ := neo4j.GetRecordValue[string](res.Records[0], "content")
+	return content, nil
+}
+
 // UpdateEmbedding writes an embedding vector to an existing memory.
 func (r *Repository) UpdateEmbedding(ctx context.Context, id string, vec []float32) error {
 	const cypher = `

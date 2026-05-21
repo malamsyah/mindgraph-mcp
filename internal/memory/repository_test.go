@@ -465,6 +465,68 @@ func TestMissingEmbeddingsAndUpdate(t *testing.T) {
 	}
 }
 
+func TestListAllForReembed_PaginatesInIDOrder(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	// UUIDv7 ids are time-ordered; AddMemory in sequence yields monotonically
+	// increasing ids, so afterID-based pagination should walk creation order.
+	a := mustAdd(t, repo, ctx, "first", nil, normalizedVec(16, 0))
+	b := mustAdd(t, repo, ctx, "second", nil, normalizedVec(16, 1))
+	c, _ := repo.AddMemory(ctx, "third with null embedding", nil, nil)
+
+	first, err := repo.ListAllForReembed(ctx, "", 2)
+	if err != nil {
+		t.Fatalf("ListAllForReembed page 1: %v", err)
+	}
+	if len(first) != 2 || first[0].ID != a.ID || first[1].ID != b.ID {
+		t.Fatalf("page 1 = %+v, want [a b]", ids(first))
+	}
+
+	next, err := repo.ListAllForReembed(ctx, first[len(first)-1].ID, 2)
+	if err != nil {
+		t.Fatalf("ListAllForReembed page 2: %v", err)
+	}
+	// scope=all returns memories regardless of embedding state, so c is included.
+	if len(next) != 1 || next[0].ID != c.ID {
+		t.Errorf("page 2 = %+v, want [c]", ids(next))
+	}
+
+	empty, err := repo.ListAllForReembed(ctx, next[len(next)-1].ID, 2)
+	if err != nil {
+		t.Fatalf("ListAllForReembed page 3: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("page 3 = %+v, want []", ids(empty))
+	}
+}
+
+func TestGetMemoryContent(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	m := mustAdd(t, repo, ctx, "hello world", nil, nil)
+
+	got, err := repo.GetMemoryContent(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMemoryContent: %v", err)
+	}
+	if got != "hello world" {
+		t.Errorf("content = %q, want %q", got, "hello world")
+	}
+
+	if _, err := repo.GetMemoryContent(ctx, "missing"); !errors.Is(err, ErrMemoryNotFound) {
+		t.Errorf("expected ErrMemoryNotFound for unknown id, got %v", err)
+	}
+}
+
+func ids(ms []Memory) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.ID
+	}
+	return out
+}
+
 // normalizedVec returns a unit vector of dim N with a 1.0 at index hot.
 func normalizedVec(dim, hot int) []float32 {
 	v := make([]float32, dim)

@@ -19,6 +19,7 @@ import (
 	"github.com/malamsyah/mindgraph-mcp/internal/embeddings"
 	mcpserver "github.com/malamsyah/mindgraph-mcp/internal/mcp"
 	"github.com/malamsyah/mindgraph-mcp/internal/memory"
+	"github.com/malamsyah/mindgraph-mcp/internal/reembed"
 )
 
 func main() {
@@ -89,51 +90,34 @@ func main() {
 
 // backfillMissingEmbeddings runs once at startup, embedding any memories that
 // were persisted without one (e.g. created during Voyage outages or Phase 1).
-// Batches of 128 keep request payloads sane.
+// Shares its implementation with the reembed_memories MCP tool so a manual
+// re-run behaves identically to the boot pass.
 func backfillMissingEmbeddings(ctx context.Context, repo *memory.Repository, embedder embeddings.Embedder) {
 	if embedder == nil {
 		return
 	}
-	const batch = 128
-	total := 0
-	for {
-		if err := ctx.Err(); err != nil {
-			return
-		}
-		pending, err := repo.MissingEmbeddings(ctx, batch)
-		if err != nil {
-			slog.Error("backfill: query missing embeddings", "err", err)
-			return
-		}
-		if len(pending) == 0 {
-			if total > 0 {
-				slog.Info("backfill complete", "embedded", total)
-			}
-			return
-		}
-		texts := make([]string, len(pending))
-		for i, m := range pending {
-			texts[i] = m.Content
-		}
-		vecs, err := embedder.Embed(ctx, texts, embeddings.InputDocument)
-		if err != nil {
-			slog.Error("backfill embed failed; aborting backfill", "err", err)
-			return
-		}
-		for i, m := range pending {
-			if i >= len(vecs) {
-				break
-			}
-			if err := repo.UpdateEmbedding(ctx, m.ID, vecs[i]); err != nil {
-				slog.Error("backfill update embedding", "id", m.ID, "err", err)
-			}
-		}
-		total += len(pending)
-		if len(pending) < batch {
-			slog.Info("backfill complete", "embedded", total)
-			return
-		}
+	result, err := reembed.Run(ctx, repo, embedder, reembed.Options{Scope: reembed.ScopeMissing})
+	if err != nil {
+		slog.Error("backfill failed", "err", err, "processed", processed(result), "succeeded", succeeded(result))
+		return
 	}
+	if result.Processed > 0 {
+		slog.Info("backfill complete", "processed", result.Processed, "succeeded", result.Succeeded, "failed", result.Failed)
+	}
+}
+
+func processed(r *reembed.Result) int {
+	if r == nil {
+		return 0
+	}
+	return r.Processed
+}
+
+func succeeded(r *reembed.Result) int {
+	if r == nil {
+		return 0
+	}
+	return r.Succeeded
 }
 
 func withRequestID(next http.Handler) http.Handler {

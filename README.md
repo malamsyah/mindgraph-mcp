@@ -40,7 +40,7 @@ See [SPEC.md](./SPEC.md) for the full design specification.
 
 ## Features
 
-- **7 MCP tools** for memory CRUD, search, and graph traversal — see [tool reference](#tool-reference).
+- **8 MCP tools** for memory CRUD, search, graph traversal, and embedding recovery — see [tool reference](#tool-reference).
 - **Three search modes**: `fulltext`, `semantic`, `hybrid` (RRF fusion, default).
 - **Graph traversal**: shortest path between memories; n-hop neighborhood queries.
 - **Streamable HTTP MCP transport** — remote-deployable, accessible from any compliant MCP client.
@@ -199,6 +199,34 @@ Discover memories within N hops of a starting memory.
 ```
 
 Returns memories sorted by graph distance (ascending). Optional `relationship_filter` restricts which edge types count.
+
+### `reembed_memories`
+
+Regenerate embeddings for memories whose original embedding call failed (or for the entire corpus, e.g. after switching models). The server also runs `scope=missing` once at boot; this tool exposes the same routine for on-demand recovery.
+
+**Input**
+```json
+{
+  "scope": "missing",
+  "limit": 0
+}
+```
+
+- `scope` — `missing` (default; only memories with NULL embedding) or `all` (every memory, regardless of current state).
+- `id` — optional; when set, only that single memory is re-embedded and `scope` is ignored.
+- `limit` — max memories to process in this call. `0` (default) means no cap.
+
+**Output**
+```json
+{
+  "scope": "missing",
+  "processed": 12,
+  "succeeded": 12,
+  "failed": 0
+}
+```
+
+When some memories fail, `failures` is included with per-id error messages. If the embedder is unreachable, the partial result is returned alongside the error so you can see what was completed.
 
 ## Quick start
 
@@ -381,6 +409,7 @@ mindgraph-mcp/
 │   ├── config/                     # Env + Secret Manager loading
 │   ├── memory/                     # Neo4j repository
 │   ├── embeddings/                 # Voyage AI client
+│   ├── reembed/                    # Boot backfill + reembed_memories
 │   ├── search/                     # RRF fusion
 │   ├── mcp/                        # mcp-go server + tool handlers
 │   └── auth/                       # API key middleware
@@ -426,7 +455,7 @@ Browse to `http://localhost:7474` to inspect data visually during development.
 
 ## Roadmap
 
-v1 ships the seven tools described above. Tracked for future versions:
+v1 ships the eight tools described above. Tracked for future versions:
 
 - **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones.
 - **v1.2**: Bulk import / export (markdown directory in, JSON dump out).
