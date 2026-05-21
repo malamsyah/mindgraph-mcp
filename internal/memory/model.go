@@ -72,6 +72,33 @@ type RelatedMemory struct {
 	Distance int    `json:"distance"`
 }
 
+// TagCount is one entry of a list_tags result.
+type TagCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// MemoryPreview is one entry of a list_memories page. Content is truncated to
+// keep large pages cheap to serialize; callers should call get_memory for the
+// full body.
+type MemoryPreview struct {
+	ID             string    `json:"id"`
+	ContentPreview string    `json:"content_preview"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// MemoriesPage is the paginated payload of list_memories.
+type MemoriesPage struct {
+	Items       []MemoryPreview `json:"items"`
+	NextAfterID string          `json:"next_after_id"`
+}
+
+// RelationshipCount is one entry of a list_relationships result.
+type RelationshipCount struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
 // NormalizeTagName lowercases and trims a single tag string. Empty / whitespace
 // inputs return "". Used wherever a single tag name is accepted (delete_tag,
 // update_tag, merge_tags) so callers see consistent matching regardless of

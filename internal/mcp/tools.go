@@ -45,6 +45,9 @@ func (h *Handlers) Register(s *server.MCPServer) {
 	s.AddTool(updateTagTool(), h.handleUpdateTag)
 	s.AddTool(mergeTagsTool(), h.handleMergeTags)
 	s.AddTool(deleteRelationshipTool(), h.handleDeleteRelationship)
+	s.AddTool(listTagsTool(), h.handleListTags)
+	s.AddTool(listMemoriesTool(), h.handleListMemories)
+	s.AddTool(listRelationshipsTool(), h.handleListRelationships)
 }
 
 // ---- tool definitions ----
@@ -130,6 +133,26 @@ func findRelatedTool() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Max results (default 20)."),
 			mcp.Min(1), mcp.Max(50), mcp.DefaultNumber(20)),
+	)
+}
+
+func listTagsTool() mcp.Tool {
+	return mcp.NewTool("list_tags",
+		mcp.WithDescription("Return every tag in the graph with the number of memories using it, sorted by count DESC. Useful for auditing tag vocabulary before standardization."),
+	)
+}
+
+func listMemoriesTool() mcp.Tool {
+	return mcp.NewTool("list_memories",
+		mcp.WithDescription("Paginated list of memories ordered by UUIDv7 id (creation order). Returns truncated content previews — call get_memory for full content. Pass next_after_id back to fetch the next page."),
+		mcp.WithString("after_id", mcp.Description("Pagination cursor; '' (or omit) returns the first page.")),
+		mcp.WithNumber("limit", mcp.Description("Page size (1-500, default 50)."), mcp.Min(1), mcp.Max(500), mcp.DefaultNumber(50)),
+	)
+}
+
+func listRelationshipsTool() mcp.Tool {
+	return mcp.NewTool("list_relationships",
+		mcp.WithDescription("Return every distinct RELATES_TO label with usage count, sorted by count DESC. Useful for auditing relationship-label vocabulary before standardization."),
 	)
 }
 
@@ -345,6 +368,32 @@ func (h *Handlers) handleFindRelated(ctx context.Context, req mcp.CallToolReques
 		return mapRepoError(err)
 	}
 	return jsonResult(map[string]any{"related": res})
+}
+
+func (h *Handlers) handleListTags(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	tags, err := h.Repo.ListTags(ctx)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{"tags": tags})
+}
+
+func (h *Handlers) handleListMemories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	afterID := req.GetString("after_id", "")
+	limit := req.GetInt("limit", 50)
+	page, err := h.Repo.ListMemoriesPaged(ctx, afterID, limit, 200)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(page)
+}
+
+func (h *Handlers) handleListRelationships(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	rels, err := h.Repo.ListRelationships(ctx)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{"relationships": rels})
 }
 
 func (h *Handlers) handleDeleteRelationship(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

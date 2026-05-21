@@ -40,7 +40,7 @@ See [SPEC.md](./SPEC.md) for the full design specification.
 
 ## Features
 
-- **13 MCP tools** for memory CRUD, search, graph traversal, embedding recovery, deletion, tag management, and relationship removal — see [tool reference](#tool-reference).
+- **16 MCP tools** for memory CRUD, search, graph traversal, enumeration, embedding recovery, deletion, tag management, and relationship removal — see [tool reference](#tool-reference).
 - **Three search modes**: `fulltext`, `semantic`, `hybrid` (RRF fusion, default).
 - **Graph traversal**: shortest path between memories; n-hop neighborhood queries.
 - **Streamable HTTP MCP transport** — remote-deployable, accessible from any compliant MCP client.
@@ -153,6 +153,53 @@ Most recently updated memories, optionally tag-filtered.
 {
   "limit": 10,
   "tags": ["reliability"]
+}
+```
+
+### `list_tags`
+
+Return every tag in the graph with its usage count, sorted by count DESC then name ASC. Useful for auditing tag vocabulary before a standardization pass.
+
+**Output**
+```json
+{
+  "tags": [
+    { "name": "mf", "count": 8 },
+    { "name": "career-strategy", "count": 6 }
+  ]
+}
+```
+
+### `list_memories`
+
+Paginated list of memories ordered by UUIDv7 id (creation order). Content is truncated to a 200-character preview — call `get_memory` for the full body. Pass `next_after_id` back to fetch the next page; an empty `next_after_id` indicates the last page.
+
+**Input**
+```json
+{ "after_id": "01HXY...", "limit": 50 }
+```
+
+**Output**
+```json
+{
+  "items": [
+    { "id": "01HXY...", "content_preview": "Circuit breaker pattern: ...", "updated_at": "2026-05-21T03:14:00Z" }
+  ],
+  "next_after_id": "01HXZ..."
+}
+```
+
+### `list_relationships`
+
+Return every distinct `RELATES_TO` label with usage count. Useful for spotting label sprawl (e.g. `motivates` vs `motivated-by`) before consolidation.
+
+**Output**
+```json
+{
+  "relationships": [
+    { "label": "refines", "count": 12 },
+    { "label": "context-for", "count": 7 }
+  ]
 }
 ```
 
@@ -552,7 +599,7 @@ Browse to `http://localhost:7474` to inspect data visually during development.
 
 ## Roadmap
 
-v1 ships the thirteen tools described above. Tracked for future versions:
+v1 ships the sixteen tools described above. Tracked for future versions:
 
 - **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones (current `delete_memory` is hard-delete only).
 - **v1.2**: Bulk import / export (markdown directory in, JSON dump out).

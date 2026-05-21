@@ -547,6 +547,98 @@ func TestDeleteMemory_RejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestListTags_CountsAndSorts(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	_ = mustAdd(t, repo, ctx, "A", []string{"alpha", "beta"}, nil)
+	_ = mustAdd(t, repo, ctx, "B", []string{"alpha"}, nil)
+	_ = mustAdd(t, repo, ctx, "C", []string{"alpha", "gamma"}, nil)
+
+	tags, err := repo.ListTags(ctx)
+	if err != nil {
+		t.Fatalf("ListTags: %v", err)
+	}
+	if len(tags) != 3 {
+		t.Fatalf("expected 3 tags, got %d (%+v)", len(tags), tags)
+	}
+	// alpha (3) > beta (1) = gamma (1); beta sorts before gamma alphabetically.
+	if tags[0].Name != "alpha" || tags[0].Count != 3 {
+		t.Errorf("expected alpha=3 first, got %+v", tags[0])
+	}
+	if tags[1].Name != "beta" || tags[2].Name != "gamma" {
+		t.Errorf("expected beta,gamma after alpha, got %+v", tags[1:])
+	}
+}
+
+func TestListMemoriesPaged_PaginatesAndPreviewsContent(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	long := "abcdefghijklmnopqrstuvwxyz0123456789"
+	for i := range 4 {
+		mustAdd(t, repo, ctx, long+"-"+string(rune('A'+i)), nil, nil)
+	}
+
+	first, err := repo.ListMemoriesPaged(ctx, "", 2, 10)
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(first.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(first.Items))
+	}
+	if len(first.Items[0].ContentPreview) != 10 {
+		t.Errorf("expected preview truncated to 10 chars, got %q (%d)", first.Items[0].ContentPreview, len(first.Items[0].ContentPreview))
+	}
+	if first.NextAfterID == "" {
+		t.Error("expected next_after_id on full page")
+	}
+
+	second, err := repo.ListMemoriesPaged(ctx, first.NextAfterID, 2, 10)
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if len(second.Items) != 2 {
+		t.Errorf("expected 2 items on page 2, got %d", len(second.Items))
+	}
+
+	tail, err := repo.ListMemoriesPaged(ctx, second.NextAfterID, 2, 10)
+	if err != nil {
+		t.Fatalf("page 3: %v", err)
+	}
+	if len(tail.Items) != 0 {
+		t.Errorf("expected empty terminal page, got %d items", len(tail.Items))
+	}
+	if tail.NextAfterID != "" {
+		t.Errorf("expected empty next_after_id at end, got %q", tail.NextAfterID)
+	}
+}
+
+func TestListRelationships_CountsAndSorts(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	a := mustAdd(t, repo, ctx, "A", nil, nil)
+	b := mustAdd(t, repo, ctx, "B", nil, nil)
+	c := mustAdd(t, repo, ctx, "C", nil, nil)
+
+	_ = repo.LinkMemories(ctx, a.ID, b.ID, "refines")
+	_ = repo.LinkMemories(ctx, b.ID, c.ID, "refines")
+	_ = repo.LinkMemories(ctx, a.ID, c.ID, "contradicts")
+
+	rels, err := repo.ListRelationships(ctx)
+	if err != nil {
+		t.Fatalf("ListRelationships: %v", err)
+	}
+	if len(rels) != 2 {
+		t.Fatalf("expected 2 distinct labels, got %d (%+v)", len(rels), rels)
+	}
+	if rels[0].Label != "refines" || rels[0].Count != 2 {
+		t.Errorf("expected refines=2 first, got %+v", rels[0])
+	}
+	if rels[1].Label != "contradicts" || rels[1].Count != 1 {
+		t.Errorf("expected contradicts=1 second, got %+v", rels[1])
+	}
+}
+
 func TestDeleteRelationship_RemovesOnlyMatchingLabel(t *testing.T) {
 	repo := testRepo(t)
 	ctx := context.Background()

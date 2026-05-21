@@ -481,6 +481,90 @@ func (r *Repository) MissingEmbeddings(ctx context.Context, limit int) ([]Memory
 	return out, nil
 }
 
+// ListTags returns every Tag in the graph with the number of memories tagged
+// with it, sorted by count DESC, then name ASC for stable ordering of ties.
+// Unbounded result set — personal graphs are expected to stay under ~hundreds
+// of tags, so pagination isn't worth the complexity.
+func (r *Repository) ListTags(ctx context.Context) ([]TagCount, error) {
+	const cypher = `
+		MATCH (t:Tag)
+		OPTIONAL MATCH (m:Memory)-[:TAGGED_WITH]->(t)
+		WITH t.name AS name, count(m) AS count
+		RETURN name, count
+		ORDER BY count DESC, name ASC`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher, nil, neo4j.EagerResultTransformer)
+	if err != nil {
+		return nil, fmt.Errorf("list tags: %w", err)
+	}
+	out := make([]TagCount, 0, len(res.Records))
+	for _, rec := range res.Records {
+		name, _, _ := neo4j.GetRecordValue[string](rec, "name")
+		count, _, _ := neo4j.GetRecordValue[int64](rec, "count")
+		out = append(out, TagCount{Name: name, Count: int(count)})
+	}
+	return out, nil
+}
+
+// ListMemoriesPaged returns a single page of memories ordered by UUIDv7 id
+// ASC (i.e. creation order). Content is truncated to previewLen to keep the
+// payload bounded; full content is via get_memory. NextAfterID is set when
+// another page may exist.
+func (r *Repository) ListMemoriesPaged(ctx context.Context, afterID string, limit, previewLen int) (*MemoriesPage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if previewLen <= 0 {
+		previewLen = 200
+	}
+	cypher := fmt.Sprintf(`
+		MATCH (m:Memory)
+		WHERE $after_id = "" OR m.id > $after_id
+		RETURN m.id AS id, substring(m.content, 0, %d) AS content_preview, m.updated_at AS updated_at
+		ORDER BY m.id ASC
+		LIMIT $limit`, previewLen)
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"after_id": afterID, "limit": int64(limit)},
+		neo4j.EagerResultTransformer)
+	if err != nil {
+		return nil, fmt.Errorf("list memories: %w", err)
+	}
+	page := &MemoriesPage{Items: make([]MemoryPreview, 0, len(res.Records))}
+	for _, rec := range res.Records {
+		id, _, _ := neo4j.GetRecordValue[string](rec, "id")
+		preview, _, _ := neo4j.GetRecordValue[string](rec, "content_preview")
+		updatedAt, err := recordTime(rec, "updated_at")
+		if err != nil {
+			return nil, fmt.Errorf("decode updated_at: %w", err)
+		}
+		page.Items = append(page.Items, MemoryPreview{ID: id, ContentPreview: preview, UpdatedAt: updatedAt})
+	}
+	if len(page.Items) == limit {
+		page.NextAfterID = page.Items[len(page.Items)-1].ID
+	}
+	return page, nil
+}
+
+// ListRelationships returns every distinct RELATES_TO label with usage count,
+// sorted by count DESC, then label ASC.
+func (r *Repository) ListRelationships(ctx context.Context) ([]RelationshipCount, error) {
+	const cypher = `
+		MATCH ()-[r:RELATES_TO]->()
+		WITH r.relationship AS label, count(r) AS count
+		RETURN label, count
+		ORDER BY count DESC, label ASC`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher, nil, neo4j.EagerResultTransformer)
+	if err != nil {
+		return nil, fmt.Errorf("list relationships: %w", err)
+	}
+	out := make([]RelationshipCount, 0, len(res.Records))
+	for _, rec := range res.Records {
+		label, _, _ := neo4j.GetRecordValue[string](rec, "label")
+		count, _, _ := neo4j.GetRecordValue[int64](rec, "count")
+		out = append(out, RelationshipCount{Label: label, Count: int(count)})
+	}
+	return out, nil
+}
+
 // ListAllForReembed returns memories with id > afterID, ordered by id ASC, up
 // to limit. Used for full re-embed (e.g. recovering from a batch of failed
 // embedding calls) where target memories may already have a stored — but
