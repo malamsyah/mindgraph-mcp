@@ -547,6 +547,145 @@ func TestDeleteMemory_RejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestDeleteTag_RemovesTagPreservesMemories(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	a := mustAdd(t, repo, ctx, "A", []string{"keep", "drop"}, nil)
+	b := mustAdd(t, repo, ctx, "B", []string{"drop"}, nil)
+
+	affected, err := repo.DeleteTag(ctx, "  Drop  ") // normalization: trim + lower
+	if err != nil {
+		t.Fatalf("DeleteTag: %v", err)
+	}
+	if affected != 2 {
+		t.Errorf("memories_affected = %d, want 2", affected)
+	}
+
+	// A still exists with "keep"; B still exists with no tags.
+	da, _ := repo.GetMemory(ctx, a.ID)
+	if len(da.Tags) != 1 || da.Tags[0] != "keep" {
+		t.Errorf("A tags = %+v, want [keep]", da.Tags)
+	}
+	db, _ := repo.GetMemory(ctx, b.ID)
+	if len(db.Tags) != 0 {
+		t.Errorf("B tags = %+v, want []", db.Tags)
+	}
+}
+
+func TestDeleteTag_NotFound(t *testing.T) {
+	repo := testRepo(t)
+	if _, err := repo.DeleteTag(context.Background(), "ghost"); !errors.Is(err, ErrTagNotFound) {
+		t.Errorf("expected ErrTagNotFound, got %v", err)
+	}
+}
+
+func TestDeleteTag_RejectsEmptyName(t *testing.T) {
+	repo := testRepo(t)
+	if _, err := repo.DeleteTag(context.Background(), "   "); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for blank name, got %v", err)
+	}
+}
+
+func TestRenameTag_RewritesAllMemoryTags(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	a := mustAdd(t, repo, ctx, "A", []string{"designpatterns"}, nil)
+	b := mustAdd(t, repo, ctx, "B", []string{"designpatterns"}, nil)
+
+	affected, err := repo.RenameTag(ctx, "designpatterns", "design-patterns")
+	if err != nil {
+		t.Fatalf("RenameTag: %v", err)
+	}
+	if affected != 2 {
+		t.Errorf("affected = %d, want 2", affected)
+	}
+
+	for _, mem := range []*Memory{a, b} {
+		d, _ := repo.GetMemory(ctx, mem.ID)
+		if len(d.Tags) != 1 || d.Tags[0] != "design-patterns" {
+			t.Errorf("memory %s tags = %+v, want [design-patterns]", mem.ID, d.Tags)
+		}
+	}
+}
+
+func TestRenameTag_ConflictRejected(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	_ = mustAdd(t, repo, ctx, "A", []string{"foo", "bar"}, nil)
+
+	_, err := repo.RenameTag(ctx, "foo", "bar")
+	if !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs on name conflict, got %v", err)
+	}
+}
+
+func TestRenameTag_NotFound(t *testing.T) {
+	repo := testRepo(t)
+	if _, err := repo.RenameTag(context.Background(), "ghost", "phantom"); !errors.Is(err, ErrTagNotFound) {
+		t.Errorf("expected ErrTagNotFound, got %v", err)
+	}
+}
+
+func TestRenameTag_SameNameRejected(t *testing.T) {
+	repo := testRepo(t)
+	if _, err := repo.RenameTag(context.Background(), "x", "x"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs when names match, got %v", err)
+	}
+}
+
+func TestMergeTags_FoldsSourceIntoTarget(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	a := mustAdd(t, repo, ctx, "A", []string{"old"}, nil)
+	b := mustAdd(t, repo, ctx, "B", []string{"old", "new"}, nil) // already has both
+	c := mustAdd(t, repo, ctx, "C", []string{"new"}, nil)        // only target
+
+	affected, err := repo.MergeTags(ctx, "old", "new")
+	if err != nil {
+		t.Fatalf("MergeTags: %v", err)
+	}
+	// A and B were tagged with "old" — both rewired. C was unaffected.
+	if affected != 2 {
+		t.Errorf("affected = %d, want 2", affected)
+	}
+
+	// A should now have only "new"; B keeps the single "new" (no duplicate).
+	for _, mem := range []*Memory{a, b, c} {
+		d, _ := repo.GetMemory(ctx, mem.ID)
+		if len(d.Tags) != 1 || d.Tags[0] != "new" {
+			t.Errorf("memory %s tags = %+v, want [new]", mem.ID, d.Tags)
+		}
+	}
+
+	// Source tag must be gone.
+	if _, err := repo.DeleteTag(ctx, "old"); !errors.Is(err, ErrTagNotFound) {
+		t.Errorf("expected old tag gone after merge, got %v", err)
+	}
+}
+
+func TestMergeTags_BothMustExist(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	_ = mustAdd(t, repo, ctx, "A", []string{"only"}, nil)
+
+	if _, err := repo.MergeTags(ctx, "only", "missing"); !errors.Is(err, ErrTagNotFound) {
+		t.Errorf("expected ErrTagNotFound when target missing, got %v", err)
+	}
+	if _, err := repo.MergeTags(ctx, "missing", "only"); !errors.Is(err, ErrTagNotFound) {
+		t.Errorf("expected ErrTagNotFound when source missing, got %v", err)
+	}
+}
+
+func TestMergeTags_SameSourceTargetRejected(t *testing.T) {
+	repo := testRepo(t)
+	if _, err := repo.MergeTags(context.Background(), "x", "x"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("expected ErrInvalidArgs for src==dst, got %v", err)
+	}
+}
+
 func TestGetMemoryContent(t *testing.T) {
 	repo := testRepo(t)
 	ctx := context.Background()

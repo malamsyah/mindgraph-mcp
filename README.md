@@ -40,7 +40,7 @@ See [SPEC.md](./SPEC.md) for the full design specification.
 
 ## Features
 
-- **9 MCP tools** for memory CRUD, search, graph traversal, embedding recovery, and deletion — see [tool reference](#tool-reference).
+- **12 MCP tools** for memory CRUD, search, graph traversal, embedding recovery, deletion, and tag management — see [tool reference](#tool-reference).
 - **Three search modes**: `fulltext`, `semantic`, `hybrid` (RRF fusion, default).
 - **Graph traversal**: shortest path between memories; n-hop neighborhood queries.
 - **Streamable HTTP MCP transport** — remote-deployable, accessible from any compliant MCP client.
@@ -243,6 +243,62 @@ Permanently delete a memory and all of its incoming/outgoing relationships. Tag 
 ```
 
 Returns `MemoryNotFound` if the id doesn't exist.
+
+### `delete_tag`
+
+Permanently delete a tag and remove it from every memory it's attached to. Memories themselves are preserved (a memory with no tags is still a valid memory).
+
+**Input**
+```json
+{ "name": "deprecated" }
+```
+
+**Output**
+```json
+{ "name": "deprecated", "deleted": true, "memories_affected": 4 }
+```
+
+Returns `TagNotFound` if the tag doesn't exist. Names are normalized (lowercase + trim) before lookup.
+
+### `update_tag`
+
+Rename a tag. The new name must not already exist — to fold one tag into another, use `merge_tags`.
+
+**Input**
+```json
+{ "old_name": "designpatterns", "new_name": "design-patterns" }
+```
+
+**Output**
+```json
+{
+  "old_name": "designpatterns",
+  "new_name": "design-patterns",
+  "renamed": true,
+  "memories_affected": 5
+}
+```
+
+Returns `InvalidArgument` if `new_name` already exists.
+
+### `merge_tags`
+
+Fold a source tag into a target tag: every memory tagged with `source` becomes tagged with `target` (no duplicate edges), then `source` is deleted. Both tags must already exist.
+
+**Input**
+```json
+{ "source": "ml", "target": "machine-learning" }
+```
+
+**Output**
+```json
+{
+  "source": "ml",
+  "target": "machine-learning",
+  "merged": true,
+  "memories_affected": 12
+}
+```
 
 ## Quick start
 
@@ -471,7 +527,7 @@ Browse to `http://localhost:7474` to inspect data visually during development.
 
 ## Roadmap
 
-v1 ships the nine tools described above. Tracked for future versions:
+v1 ships the twelve tools described above. Tracked for future versions:
 
 - **v1.1**: Memory update tool (re-embed on content change); soft-delete with tombstones (current `delete_memory` is hard-delete only).
 - **v1.2**: Bulk import / export (markdown directory in, JSON dump out).

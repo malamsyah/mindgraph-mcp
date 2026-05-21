@@ -8,6 +8,7 @@ import (
 
 var (
 	ErrMemoryNotFound = errors.New("memory not found")
+	ErrTagNotFound    = errors.New("tag not found")
 	ErrInvalidArgs    = errors.New("invalid arguments")
 )
 
@@ -70,6 +71,14 @@ type RelatedMemory struct {
 	Distance int    `json:"distance"`
 }
 
+// NormalizeTagName lowercases and trims a single tag string. Empty / whitespace
+// inputs return "". Used wherever a single tag name is accepted (delete_tag,
+// update_tag, merge_tags) so callers see consistent matching regardless of
+// casing or surrounding whitespace.
+func NormalizeTagName(in string) string {
+	return strings.ToLower(strings.TrimSpace(in))
+}
+
 // NormalizeTags lowercases, trims, drops empty, and deduplicates while
 // preserving first-occurrence order.
 func NormalizeTags(in []string) []string {
@@ -79,7 +88,7 @@ func NormalizeTags(in []string) []string {
 	seen := make(map[string]bool, len(in))
 	out := make([]string, 0, len(in))
 	for _, t := range in {
-		t = strings.ToLower(strings.TrimSpace(t))
+		t = NormalizeTagName(t)
 		if t == "" || seen[t] {
 			continue
 		}

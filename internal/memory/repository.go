@@ -182,6 +182,111 @@ func (r *Repository) DeleteMemory(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteTag removes a Tag node and all TAGGED_WITH edges pointing to it. The
+// affected memories themselves survive — losing a tag never deletes a memory.
+// Returns the number of memories that lost the tag.
+func (r *Repository) DeleteTag(ctx context.Context, name string) (int, error) {
+	name = NormalizeTagName(name)
+	if name == "" {
+		return 0, fmt.Errorf("%w: tag name is required", ErrInvalidArgs)
+	}
+	const cypher = `
+		MATCH (t:Tag {name: $name})
+		OPTIONAL MATCH (m:Memory)-[r:TAGGED_WITH]->(t)
+		WITH t, count(r) AS affected
+		DETACH DELETE t
+		RETURN affected`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"name": name}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return 0, fmt.Errorf("delete tag: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return 0, ErrTagNotFound
+	}
+	affected, _, _ := neo4j.GetRecordValue[int64](res.Records[0], "affected")
+	return int(affected), nil
+}
+
+// RenameTag changes a tag's name. The new name must not already exist —
+// callers wanting to fold one tag into another should use MergeTags instead.
+// Returns the number of memories that were tagged with the renamed tag.
+func (r *Repository) RenameTag(ctx context.Context, oldName, newName string) (int, error) {
+	oldName = NormalizeTagName(oldName)
+	newName = NormalizeTagName(newName)
+	if oldName == "" || newName == "" {
+		return 0, fmt.Errorf("%w: old_name and new_name are required", ErrInvalidArgs)
+	}
+	if oldName == newName {
+		return 0, fmt.Errorf("%w: old_name and new_name are identical", ErrInvalidArgs)
+	}
+
+	// Pre-check to give a useful error rather than a constraint violation. Race
+	// with concurrent writers isn't a concern in single-user v1.
+	const existsQ = `MATCH (t:Tag {name: $name}) RETURN t.name AS name`
+	exists, err := neo4j.ExecuteQuery(ctx, r.driver, existsQ,
+		map[string]any{"name": newName}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return 0, fmt.Errorf("rename tag exists-check: %w", err)
+	}
+	if len(exists.Records) > 0 {
+		return 0, fmt.Errorf("%w: tag %q already exists; use merge_tags to combine", ErrInvalidArgs, newName)
+	}
+
+	const renameQ = `
+		MATCH (t:Tag {name: $old})
+		OPTIONAL MATCH (m:Memory)-[:TAGGED_WITH]->(t)
+		WITH t, count(m) AS affected
+		SET t.name = $new
+		RETURN affected`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, renameQ,
+		map[string]any{"old": oldName, "new": newName}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return 0, fmt.Errorf("rename tag: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return 0, ErrTagNotFound
+	}
+	affected, _, _ := neo4j.GetRecordValue[int64](res.Records[0], "affected")
+	return int(affected), nil
+}
+
+// MergeTags folds src into dst: every memory tagged with src ends up tagged
+// with dst (idempotent — no duplicate edges), then src is deleted. Both tags
+// must already exist; use RenameTag to relabel a tag that has no merge target.
+// Returns the number of memories whose edges were rewritten.
+func (r *Repository) MergeTags(ctx context.Context, src, dst string) (int, error) {
+	src = NormalizeTagName(src)
+	dst = NormalizeTagName(dst)
+	if src == "" || dst == "" {
+		return 0, fmt.Errorf("%w: source and target tag names are required", ErrInvalidArgs)
+	}
+	if src == dst {
+		return 0, fmt.Errorf("%w: source and target must differ", ErrInvalidArgs)
+	}
+
+	const cypher = `
+		MATCH (src:Tag {name: $src})
+		MATCH (dst:Tag {name: $dst})
+		OPTIONAL MATCH (m:Memory)-[:TAGGED_WITH]->(src)
+		WITH src, dst, collect(DISTINCT m) AS memories
+		WITH src, dst, memories, size(memories) AS affected
+		FOREACH (mem IN memories | MERGE (mem)-[:TAGGED_WITH]->(dst))
+		WITH src, affected
+		DETACH DELETE src
+		RETURN affected`
+	res, err := neo4j.ExecuteQuery(ctx, r.driver, cypher,
+		map[string]any{"src": src, "dst": dst}, neo4j.EagerResultTransformer)
+	if err != nil {
+		return 0, fmt.Errorf("merge tags: %w", err)
+	}
+	if len(res.Records) == 0 {
+		return 0, ErrTagNotFound
+	}
+	affected, _, _ := neo4j.GetRecordValue[int64](res.Records[0], "affected")
+	return int(affected), nil
+}
+
 // LinkMemories MERGEs a RELATES_TO edge with the given relationship label.
 // Parallel edges with different relationship strings are allowed (see SPEC §14).
 func (r *Repository) LinkMemories(ctx context.Context, fromID, toID, relationship string) error {

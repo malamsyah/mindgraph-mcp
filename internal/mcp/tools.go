@@ -41,6 +41,9 @@ func (h *Handlers) Register(s *server.MCPServer) {
 	s.AddTool(findRelatedTool(), h.handleFindRelated)
 	s.AddTool(reembedMemoriesTool(), h.handleReembedMemories)
 	s.AddTool(deleteMemoryTool(), h.handleDeleteMemory)
+	s.AddTool(deleteTagTool(), h.handleDeleteTag)
+	s.AddTool(updateTagTool(), h.handleUpdateTag)
+	s.AddTool(mergeTagsTool(), h.handleMergeTags)
 }
 
 // ---- tool definitions ----
@@ -129,6 +132,34 @@ func findRelatedTool() mcp.Tool {
 	)
 }
 
+func deleteTagTool() mcp.Tool {
+	return mcp.NewTool("delete_tag",
+		mcp.WithDescription("Permanently delete a tag and remove it from every memory it's attached to. Memories themselves are preserved. Irreversible."),
+		mcp.WithString("name", mcp.Required(), mcp.MinLength(1),
+			mcp.Description("Tag name to delete (normalized to lowercase + trim).")),
+	)
+}
+
+func updateTagTool() mcp.Tool {
+	return mcp.NewTool("update_tag",
+		mcp.WithDescription("Rename a tag. The new name must not already exist — use merge_tags to combine two existing tags."),
+		mcp.WithString("old_name", mcp.Required(), mcp.MinLength(1),
+			mcp.Description("Current tag name.")),
+		mcp.WithString("new_name", mcp.Required(), mcp.MinLength(1),
+			mcp.Description("New tag name.")),
+	)
+}
+
+func mergeTagsTool() mcp.Tool {
+	return mcp.NewTool("merge_tags",
+		mcp.WithDescription("Fold source tag into target tag: every memory tagged with source becomes tagged with target (no duplicate edges), then source is deleted. Both tags must already exist."),
+		mcp.WithString("source", mcp.Required(), mcp.MinLength(1),
+			mcp.Description("Tag to fold in and remove.")),
+		mcp.WithString("target", mcp.Required(), mcp.MinLength(1),
+			mcp.Description("Tag to keep; receives source's memories.")),
+	)
+}
+
 func deleteMemoryTool() mcp.Tool {
 	return mcp.NewTool("delete_memory",
 		mcp.WithDescription("Permanently delete a memory and all of its relationships. Tag nodes are preserved. This is irreversible — the memory cannot be recovered."),
@@ -166,11 +197,18 @@ func (h *Handlers) handleAddMemory(ctx context.Context, req mcp.CallToolRequest)
 	)
 	if h.Embedder != nil {
 		vecs, embErr := h.Embedder.Embed(ctx, []string{content}, embeddings.InputDocument)
-		if embErr != nil {
+		switch {
+		case embErr != nil:
 			slog.Warn("add_memory embedding failed; persisting with null embedding",
 				"err", embErr)
 			warning = "embedding_failed"
-		} else if len(vecs) > 0 {
+		case len(vecs) == 0 || len(vecs[0]) == 0:
+			// Non-nil-but-empty vectors would otherwise be persisted as a non-NULL
+			// empty list, evading reembed_memories(scope=missing)'s IS NULL filter.
+			// Treat as a failed embed so the row is recoverable by re-embed.
+			slog.Warn("add_memory embedding empty; persisting with null embedding")
+			warning = "embedding_failed"
+		default:
 			embedding = vecs[0]
 		}
 	}
@@ -298,6 +336,64 @@ func (h *Handlers) handleFindRelated(ctx context.Context, req mcp.CallToolReques
 	return jsonResult(map[string]any{"related": res})
 }
 
+func (h *Handlers) handleDeleteTag(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name, err := req.RequireString("name")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	affected, err := h.Repo.DeleteTag(ctx, name)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{
+		"name":              memory.NormalizeTagName(name),
+		"deleted":           true,
+		"memories_affected": affected,
+	})
+}
+
+func (h *Handlers) handleUpdateTag(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	oldName, err := req.RequireString("old_name")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	newName, err := req.RequireString("new_name")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	affected, err := h.Repo.RenameTag(ctx, oldName, newName)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{
+		"old_name":          memory.NormalizeTagName(oldName),
+		"new_name":          memory.NormalizeTagName(newName),
+		"renamed":           true,
+		"memories_affected": affected,
+	})
+}
+
+func (h *Handlers) handleMergeTags(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	src, err := req.RequireString("source")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	dst, err := req.RequireString("target")
+	if err != nil {
+		return invalidArg(err.Error()), nil
+	}
+	affected, err := h.Repo.MergeTags(ctx, src, dst)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	return jsonResult(map[string]any{
+		"source":            memory.NormalizeTagName(src),
+		"target":            memory.NormalizeTagName(dst),
+		"merged":            true,
+		"memories_affected": affected,
+	})
+}
+
 func (h *Handlers) handleDeleteMemory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id, err := req.RequireString("id")
 	if err != nil {
@@ -423,6 +519,8 @@ func mapRepoError(err error) (*mcp.CallToolResult, error) {
 	switch {
 	case errors.Is(err, memory.ErrMemoryNotFound):
 		return mcp.NewToolResultError("MemoryNotFound: " + err.Error()), nil
+	case errors.Is(err, memory.ErrTagNotFound):
+		return mcp.NewToolResultError("TagNotFound: " + err.Error()), nil
 	case errors.Is(err, memory.ErrInvalidArgs):
 		return mcp.NewToolResultError("InvalidArgument: " + err.Error()), nil
 	default:
