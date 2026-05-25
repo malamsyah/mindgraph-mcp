@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,24 @@ func NewRepository(ctx context.Context, uri, user, password string) (*Repository
 
 func (r *Repository) Close(ctx context.Context) error {
 	return r.driver.Close(ctx)
+}
+
+// IsPermanentConnectError reports whether a NewRepository failure is one that
+// retrying won't fix — bad credentials, security/cert issues. Network blips
+// and other failures are treated as transient.
+func IsPermanentConnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *neo4j.InvalidAuthenticationError
+	if errors.As(err, &authErr) {
+		return true
+	}
+	var nErr *neo4j.Neo4jError
+	if errors.As(err, &nErr) && strings.HasPrefix(nErr.Code, "Neo.ClientError.Security.") {
+		return true
+	}
+	return false
 }
 
 // Bootstrap applies all constraints and indexes idempotently.
