@@ -9,6 +9,14 @@ A graph-backed memory MCP server for Claude. Cross-session memory store with sem
 
 ---
 
+## Overview
+
+A short video explaining what mindgraph is, at a high level:
+
+<video src="https://storage.googleapis.com/mindgraph-public-assets/mindgraph_full.mp4" controls width="720"></video>
+
+> If the embedded player doesn't render, watch it here: [mindgraph_full.mp4](https://storage.googleapis.com/mindgraph-public-assets/mindgraph_full.mp4)
+
 ## Why mindgraph-mcp
 
 Claude's native memory works well for most use cases. `mindgraph-mcp` is for the cases it doesn't cover:
